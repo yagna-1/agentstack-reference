@@ -74,6 +74,9 @@ cp .env.example .env
 ### 4. Operate everything from one CLI
 
 ```bash
+# Launch rich terminal UI
+./agentstack ui
+
 # Health + status
 ./agentstack health
 ./agentstack ps
@@ -92,6 +95,27 @@ cp .env.example .env
 ./agentstack repo nexusgate cargo check
 ./agentstack repo recast go test ./...
 ```
+
+### Rich TUI Mode
+
+Run:
+
+```bash
+./agentstack ui
+```
+
+Keybindings:
+
+- `q` quit
+- `r` refresh
+- `u` compose up with build
+- `d` compose down
+- `b` bootstrap deps
+- `m` run full demo
+- `c` compile audit to tests
+- `j` / `k` move selected service
+- `l` toggle live log follow for selected service
+- `:` open command prompt (`up`, `down`, `demo`, `compile`, `logs <service>`, `repo <name> <cmd>`, `quit`)
 
 ## Demo Behavior
 
@@ -138,6 +162,7 @@ agentstack-reference/
 ```bash
 # Primary entrypoint
 ./agentstack --help
+./agentstack ui
 
 # Diagnostics
 ./agentstack doctor

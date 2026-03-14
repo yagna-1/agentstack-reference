@@ -13,11 +13,15 @@ Single-entry command surface for operating the glue stack:
 from __future__ import annotations
 
 import argparse
+import curses
+import json
 import os
 import shutil
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -72,6 +76,17 @@ def err(msg: str) -> None:
 def run(cmd: list[str], cwd: Path | None = None) -> int:
     proc = subprocess.run(cmd, cwd=str(cwd or ROOT))
     return proc.returncode
+
+
+def run_capture(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd or ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return proc.returncode, proc.stdout
 
 
 def require_script(path: Path) -> None:
@@ -226,6 +241,355 @@ def cmd_repo(args: argparse.Namespace) -> int:
     return run(args.command, cwd=repo_path)
 
 
+def _compose_ps_rows() -> tuple[list[dict], str | None]:
+    code, out = run_capture(["docker", "compose", "ps", "--format", "json"], cwd=ROOT)
+    if code != 0:
+        return [], out.strip() or "docker compose ps failed"
+    text = out.strip()
+    if not text:
+        return [], None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed, None
+        return [], "unexpected docker compose ps JSON payload"
+    except json.JSONDecodeError:
+        # Fallback: some compose versions may output line-delimited JSON.
+        rows = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    rows.append(obj)
+            except json.JSONDecodeError:
+                continue
+        if rows:
+            return rows, None
+        return [], "unable to parse docker compose ps output"
+
+
+class AgentStackTUI:
+    HELP = (
+        "q quit | r refresh | u up --build | d down | b bootstrap | m demo | c compile | "
+        "h health | j/k move | l toggle logs | : command prompt"
+    )
+
+    def __init__(self, stdscr: curses.window):
+        self.stdscr = stdscr
+        self.running = True
+        self.selected_index = 0
+        self.service_rows: list[dict] = []
+        self.health_rows: list[tuple[str, bool]] = []
+        self.status_message = "Loading..."
+        self.log_lines: list[str] = []
+        self.log_lock = threading.Lock()
+        self.log_service = ""
+        self.log_proc: subprocess.Popen[str] | None = None
+        self.log_thread: threading.Thread | None = None
+        self.follow_logs = False
+        self.last_refresh = 0.0
+        self.command_history: list[str] = []
+
+    def stop_logs(self) -> None:
+        if self.log_proc and self.log_proc.poll() is None:
+            self.log_proc.terminate()
+            try:
+                self.log_proc.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                self.log_proc.kill()
+        self.log_proc = None
+        self.log_thread = None
+
+    def start_logs(self, service: str) -> None:
+        self.stop_logs()
+        self.log_service = service
+        cmd = ["docker", "compose", "logs", "-f", "--tail", "80", service]
+        try:
+            self.log_proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            self.append_log(f"[log] failed to start logs: {exc}")
+            return
+
+        def _reader() -> None:
+            assert self.log_proc is not None
+            stream = self.log_proc.stdout
+            if stream is None:
+                return
+            for line in stream:
+                if not self.running:
+                    break
+                self.append_log(line.rstrip("\n"))
+
+        self.log_thread = threading.Thread(target=_reader, daemon=True)
+        self.log_thread.start()
+
+    def append_log(self, line: str) -> None:
+        with self.log_lock:
+            self.log_lines.append(line)
+            if len(self.log_lines) > 1500:
+                self.log_lines = self.log_lines[-1500:]
+
+    def run_action(self, title: str, cmd: list[str]) -> None:
+        self.status_message = f"{title}..."
+        code, out = run_capture(cmd, cwd=ROOT)
+        if out.strip():
+            self.append_log(f"$ {' '.join(cmd)}")
+            for line in out.strip().splitlines()[-80:]:
+                self.append_log(line)
+        if code == 0:
+            self.status_message = f"{title}: done"
+        else:
+            self.status_message = f"{title}: failed (exit {code})"
+        self.refresh(force=True)
+
+    def _draw_box(self, y: int, x: int, h: int, w: int, title: str) -> None:
+        if h < 2 or w < 2:
+            return
+        self.stdscr.addstr(y, x, "+" + "-" * (w - 2) + "+")
+        for i in range(1, h - 1):
+            self.stdscr.addstr(y + i, x, "|")
+            self.stdscr.addstr(y + i, x + w - 1, "|")
+        self.stdscr.addstr(y + h - 1, x, "+" + "-" * (w - 2) + "+")
+        if title and w > 6:
+            t = f" {title} "
+            self.stdscr.addstr(y, x + 2, t[: w - 4])
+
+    def refresh_health(self) -> None:
+        rows = []
+        for name, url in SERVICE_URLS.items():
+            rows.append((name, _url_ok(url, timeout=1.5)))
+        self.health_rows = rows
+
+    def refresh(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self.last_refresh < 1.5):
+            return
+        self.last_refresh = now
+        rows, err_msg = _compose_ps_rows()
+        self.service_rows = rows
+        if err_msg:
+            self.status_message = err_msg
+        else:
+            self.status_message = f"services: {len(rows)}"
+        if self.service_rows and self.selected_index >= len(self.service_rows):
+            self.selected_index = max(0, len(self.service_rows) - 1)
+        self.refresh_health()
+
+    def _service_name(self, row: dict) -> str:
+        name = row.get("Service") or row.get("Name") or row.get("ID") or "unknown"
+        if isinstance(name, str):
+            return name
+        return str(name)
+
+    def selected_service(self) -> str:
+        if not self.service_rows:
+            return "nexusgate"
+        return self._service_name(self.service_rows[self.selected_index])
+
+    def _status_short(self, row: dict) -> str:
+        status = row.get("State") or row.get("Status") or "unknown"
+        if isinstance(status, str):
+            status = status.strip()
+            if len(status) > 16:
+                return status[:16]
+            return status
+        return str(status)
+
+    def prompt_command(self) -> None:
+        h, w = self.stdscr.getmaxyx()
+        prompt = ": "
+        self.stdscr.move(h - 1, 0)
+        self.stdscr.clrtoeol()
+        self.stdscr.addstr(h - 1, 0, prompt)
+        curses.echo()
+        try:
+            raw = self.stdscr.getstr(h - 1, len(prompt), max(4, w - len(prompt) - 2))
+        finally:
+            curses.noecho()
+        try:
+            cmd = raw.decode("utf-8").strip()
+        except Exception:
+            cmd = ""
+        if not cmd:
+            return
+        self.command_history.append(cmd)
+        self.append_log(f"> {cmd}")
+        self._handle_prompt_command(cmd)
+
+    def _handle_prompt_command(self, cmd: str) -> None:
+        parts = cmd.split()
+        if not parts:
+            return
+        head = parts[0]
+        if head in ("quit", "q", "exit"):
+            self.running = False
+            return
+        if head == "up":
+            self.run_action("compose up", ["docker", "compose", "up", "-d", "--build"])
+            return
+        if head == "down":
+            self.run_action("compose down", ["docker", "compose", "down"])
+            return
+        if head == "demo":
+            self.run_action("demo", [str(SCRIPTS_DIR / "run.sh")])
+            return
+        if head == "compile":
+            extra = parts[1:] if len(parts) > 1 else []
+            self.run_action("compile", [str(SCRIPTS_DIR / "audit_to_tests.sh"), *extra])
+            return
+        if head == "bootstrap":
+            self.run_action("bootstrap", [str(SCRIPTS_DIR / "bootstrap.sh")])
+            return
+        if head == "health":
+            self.refresh_health()
+            self.status_message = "health refreshed"
+            return
+        if head == "logs":
+            service = parts[1] if len(parts) > 1 else self.selected_service()
+            self.follow_logs = True
+            self.start_logs(service)
+            self.status_message = f"following logs: {service}"
+            return
+        if head == "repo" and len(parts) >= 3:
+            repo = parts[1]
+            repo_path = REPO_MAP.get(repo)
+            if repo_path is None:
+                self.status_message = f"unknown repo: {repo}"
+                return
+            code, out = run_capture(parts[2:], cwd=repo_path)
+            self.append_log(f"$ (repo:{repo}) {' '.join(parts[2:])}")
+            if out.strip():
+                for line in out.strip().splitlines()[-80:]:
+                    self.append_log(line)
+            self.status_message = f"repo command exit: {code}"
+            return
+        self.status_message = f"unknown command: {cmd}"
+
+    def draw(self) -> None:
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        title = " AgentStack Control Center "
+        self.stdscr.addstr(0, 0, (title + self.HELP)[: max(0, w - 1)])
+
+        top_h = max(8, min(15, h // 3))
+        logs_h = max(8, h - top_h - 3)
+        left_w = max(45, min(70, w // 2))
+        right_w = max(20, w - left_w - 1)
+
+        self._draw_box(1, 0, top_h, left_w, "Services")
+        self._draw_box(1, left_w, top_h, right_w, "Health")
+        self._draw_box(1 + top_h, 0, logs_h, w, f"Logs ({self.log_service or 'none'})")
+
+        # Services panel
+        row_y = 2
+        header = "IDX  SERVICE                          STATUS"
+        self.stdscr.addstr(row_y, 2, header[: left_w - 4])
+        row_y += 1
+        max_rows = top_h - 3
+        for i, row in enumerate(self.service_rows[:max_rows]):
+            service = self._service_name(row)
+            status = self._status_short(row)
+            line = f"{i+1:>2}   {service:<30} {status:<16}"
+            attr = curses.A_REVERSE if i == self.selected_index else curses.A_NORMAL
+            self.stdscr.addstr(row_y + i, 2, line[: left_w - 4], attr)
+
+        if not self.service_rows:
+            self.stdscr.addstr(row_y, 2, "No services found (run `up`)", curses.A_DIM)
+
+        # Health panel
+        hy = 2
+        for name, is_ok in self.health_rows[: top_h - 3]:
+            marker = "UP" if is_ok else "DOWN"
+            line = f"{name:<20} {marker}"
+            self.stdscr.addstr(hy, left_w + 2, line[: right_w - 4])
+            hy += 1
+
+        # Logs panel
+        with self.log_lock:
+            lines = self.log_lines[-(logs_h - 3) :]
+        ly = 2 + top_h
+        for i, line in enumerate(lines):
+            self.stdscr.addstr(ly + i, 2, line[: max(1, w - 4)])
+
+        status = f"status: {self.status_message}"
+        self.stdscr.addstr(h - 1, 0, status[: max(0, w - 1)], curses.A_BOLD)
+        self.stdscr.refresh()
+
+    def loop(self) -> int:
+        curses.curs_set(0)
+        self.stdscr.nodelay(True)
+        self.stdscr.keypad(True)
+        self.refresh(force=True)
+
+        while self.running:
+            self.refresh()
+            self.draw()
+            ch = self.stdscr.getch()
+            if ch == -1:
+                time.sleep(0.08)
+                continue
+            if ch in (ord("q"), 27):  # q or ESC
+                self.running = False
+            elif ch in (ord("r"),):
+                self.refresh(force=True)
+            elif ch in (ord("j"), curses.KEY_DOWN):
+                if self.service_rows:
+                    self.selected_index = min(len(self.service_rows) - 1, self.selected_index + 1)
+            elif ch in (ord("k"), curses.KEY_UP):
+                if self.service_rows:
+                    self.selected_index = max(0, self.selected_index - 1)
+            elif ch == ord("u"):
+                self.run_action("compose up", ["docker", "compose", "up", "-d", "--build"])
+            elif ch == ord("d"):
+                self.run_action("compose down", ["docker", "compose", "down"])
+            elif ch == ord("b"):
+                self.run_action("bootstrap", [str(SCRIPTS_DIR / "bootstrap.sh")])
+            elif ch == ord("m"):
+                self.run_action("demo", [str(SCRIPTS_DIR / "run.sh")])
+            elif ch == ord("c"):
+                self.run_action("compile", [str(SCRIPTS_DIR / "audit_to_tests.sh")])
+            elif ch == ord("h"):
+                self.refresh_health()
+                self.status_message = "health refreshed"
+            elif ch == ord("l"):
+                if self.follow_logs:
+                    self.follow_logs = False
+                    self.stop_logs()
+                    self.status_message = "log follow stopped"
+                else:
+                    service = self.selected_service()
+                    self.follow_logs = True
+                    self.start_logs(service)
+                    self.status_message = f"following logs: {service}"
+            elif ch == ord(":"):
+                self.prompt_command()
+
+        self.stop_logs()
+        return 0
+
+
+def cmd_ui(_args: argparse.Namespace) -> int:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        err("ui mode requires an interactive TTY")
+        return 2
+
+    def _wrapped(stdscr: curses.window) -> int:
+        app = AgentStackTUI(stdscr)
+        return app.loop()
+
+    return curses.wrapper(_wrapped)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agentstack",
@@ -260,6 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_repo = sub.add_parser("repo", help="Run a command inside one dependency repo")
     p_repo.add_argument("repo", help="One of: nexusgate, fluxroute, recast, mcp-test, astragraph")
     p_repo.add_argument("command", nargs=argparse.REMAINDER, help="Command to run")
+    sub.add_parser("ui", help="Launch interactive terminal control center")
 
     return parser
 
@@ -290,6 +655,8 @@ def main() -> int:
         return cmd_compile(args)
     if cmd == "repo":
         return cmd_repo(args)
+    if cmd == "ui":
+        return cmd_ui(args)
     parser.print_help()
     return 2
 
