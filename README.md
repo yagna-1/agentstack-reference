@@ -13,14 +13,6 @@
   <img src="./assets/agentstack-explainer.gif" alt="AgentStack explainer" width="900" />
 </p>
 
-<p align="center">
-  <a href="./assets/agentstack-explainer.mp4">Watch MP4 explainer</a>
-</p>
-
-<p align="center">
-  <video src="./assets/agentstack-explainer.mp4" controls width="900"></video>
-</p>
-
 ## What This Repo Is
 
 `agentstack-reference` is an integration surface, not an application repo.
@@ -104,7 +96,6 @@ After a successful run, outputs are available at:
 agentstack-reference/
 ├── assets/
 │   ├── agentstack-explainer.gif
-│   └── agentstack-explainer.mp4
 ├── docker-compose.yml
 ├── examples/
 │   ├── policy/e2e-policy.yaml
