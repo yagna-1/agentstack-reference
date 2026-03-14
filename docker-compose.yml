@@ -1,0 +1,178 @@
+name: agentstack-reference
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mock-mcp:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./scripts/mock_mcp_server.py:/app/mock_mcp_server.py:ro
+    command: ["python", "/app/mock_mcp_server.py"]
+    expose:
+      - "7071"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.95.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./deps/astragraph/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+
+  graph:
+    image: rust:1.88
+    working_dir: /app
+    volumes:
+      - ./deps/astragraph:/app
+      - ./deps/astragraph/certs:/app/certs
+    command: ["bash", "-lc", "cargo run -p astragraph-graph"]
+    environment:
+      ASTRAGRAPH_GRAPH_REST_ADDR: 0.0.0.0:8080
+      ASTRAGRAPH_GRAPH_GRPC_ADDR: 0.0.0.0:9090
+      ASTRAGRAPH_GRAPH_TLS_CERT: /app/certs/graph/graph.crt
+      ASTRAGRAPH_GRAPH_TLS_KEY: /app/certs/graph/graph.key
+      ASTRAGRAPH_GRAPH_TLS_CA: /app/certs/ca/ca.crt
+      ASTRAGRAPH_AUTH_DISABLED: "true"
+    ports:
+      - "18080:8080"
+      - "19090:9090"
+    depends_on:
+      - otel-collector
+
+  policy:
+    image: rust:1.88
+    working_dir: /app
+    volumes:
+      - ./deps/astragraph:/app
+      - ./deps/astragraph/certs:/app/certs
+    command: ["bash", "-lc", "cargo run -p astragraph-policy"]
+    environment:
+      ASTRAGRAPH_POLICY_REST_ADDR: 0.0.0.0:8081
+      ASTRAGRAPH_POLICY_GRPC_ADDR: 0.0.0.0:9091
+      ASTRAGRAPH_POLICY_TLS_CERT: /app/certs/policy/policy.crt
+      ASTRAGRAPH_POLICY_TLS_KEY: /app/certs/policy/policy.key
+      ASTRAGRAPH_POLICY_TLS_CA: /app/certs/ca/ca.crt
+      ASTRAGRAPH_AUTH_DISABLED: "true"
+    ports:
+      - "18081:8081"
+      - "19091:9091"
+    depends_on:
+      - otel-collector
+
+  verifier:
+    image: python:3.11
+    working_dir: /app
+    volumes:
+      - ./deps/astragraph:/app
+      - ./deps/astragraph/certs:/app/certs
+    command: ["bash", "-lc", "pip install -r requirements.txt && python verifier/server.py"]
+    environment:
+      ASTRAGRAPH_VERIFIER_GRPC_ADDR: 0.0.0.0:8082
+      ASTRAGRAPH_VERIFIER_TLS_CERT: /app/certs/verifier/verifier.crt
+      ASTRAGRAPH_VERIFIER_TLS_KEY: /app/certs/verifier/verifier.key
+      ASTRAGRAPH_VERIFIER_TLS_CA: /app/certs/ca/ca.crt
+    ports:
+      - "18082:8082"
+    depends_on:
+      - otel-collector
+
+  astragraph-proxy:
+    image: rust:1.88
+    working_dir: /app
+    volumes:
+      - ./deps/astragraph:/app
+      - ./deps/astragraph/certs:/app/certs
+    command: ["bash", "-lc", "cargo run -p astragraph-proxy"]
+    environment:
+      ASTRAGRAPH_GRAPH_GRPC_ADDR: https://graph:9090
+      ASTRAGRAPH_POLICY_GRPC_ADDR: https://policy:9091
+      ASTRAGRAPH_VERIFIER_GRPC_ADDR: https://verifier:8082
+      ASTRAGRAPH_PROXY_TLS_CERT: /app/certs/proxy/proxy.crt
+      ASTRAGRAPH_PROXY_TLS_KEY: /app/certs/proxy/proxy.key
+      ASTRAGRAPH_PROXY_TLS_CA: /app/certs/ca/ca.crt
+      ASTRAGRAPH_MCP_CHILD_COMMAND: /bin/cat
+      ASTRAGRAPH_PROXY_HTTP_ADDR: 0.0.0.0:7070
+      ASTRAGRAPH_MCP_UPSTREAM: http://mock-mcp:7071
+      ASTRAGRAPH_A2A_UPSTREAM: http://mock-mcp:7071
+      ASTRAGRAPH_POLICY_ID: e2e-policy
+      ASTRAGRAPH_AUTH_DISABLED: "true"
+    ports:
+      - "17070:7070"
+    depends_on:
+      - graph
+      - policy
+      - verifier
+      - mock-mcp
+
+  nexusgate:
+    build:
+      context: ./deps/nexusgate
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      DATABASE_URL: sqlite:/app/data/nexusgate.db
+      REDIS_URL: redis://redis:6379
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-agentstack-local-admin-secret-change-me-123456}
+      MCP_UPSTREAM_URL: http://astragraph-proxy:7070
+      MCP_DEFAULT_ESTIMATED_COST_MICRO_USD: ${MCP_DEFAULT_ESTIMATED_COST_MICRO_USD:-2500}
+      PUBLIC_BASE_URL: http://localhost:18088
+    volumes:
+      - nexusgate_data:/app/data
+    ports:
+      - "18088:8080"
+    depends_on:
+      - redis
+      - astragraph-proxy
+
+  fluxroute-router:
+    build:
+      context: ./deps/fluxroute
+      dockerfile: deploy/Dockerfile.router
+    command: ["serve"]
+    environment:
+      ROUTER_ADDR: :8080
+      ASTRAGRAPH_AUDIT_PATH: /workspace/examples/weather-agent/output/astragraph-audit.json
+      ASTRAGRAPH_EXPORT_STRICT: "false"
+    volumes:
+      - ./examples:/workspace/examples
+    ports:
+      - "18090:8080"
+    depends_on:
+      - nexusgate
+
+  fluxroute-controlplane:
+    build:
+      context: ./deps/fluxroute
+      dockerfile: deploy/Dockerfile.controlplane
+    environment:
+      CONTROLPLANE_ADDR: :8081
+    ports:
+      - "18091:8081"
+
+  recast:
+    image: golang:1.26
+    working_dir: /workspace/recast
+    volumes:
+      - ./deps/recast:/workspace/recast
+      - ./examples:/workspace/examples
+      - /tmp/gocache-recast-compose:/tmp/gocache-recast-compose
+      - /tmp/gomodcache-recast-compose:/tmp/gomodcache-recast-compose
+    environment:
+      GOCACHE: /tmp/gocache-recast-compose
+      GOMODCACHE: /tmp/gomodcache-recast-compose
+    entrypoint: ["go", "run", "./cmd/recast"]
+    command: ["formats"]
+    profiles: ["tools"]
+
+  mcp-test:
+    image: python:3.11
+    working_dir: /workspace/mcp-test
+    volumes:
+      - ./deps/mcp-test:/workspace/mcp-test
+    command: ["bash", "-lc", "pip install -e . && pytest -q tests/test_policy_assertions.py"]
+    profiles: ["tools"]
+
+volumes:
+  nexusgate_data:

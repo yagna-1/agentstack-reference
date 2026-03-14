@@ -1,0 +1,6 @@
+.deps
+.env
+deps/
+examples/weather-agent/output/
+__pycache__/
+*.pyc

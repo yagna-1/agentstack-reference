@@ -1,0 +1,16 @@
+router:
+  namespace: weather-agent
+  default_timeout: 10s
+  rbac:
+    run_roles: [operator, admin]
+    validate_roles: [operator, admin]
+    replay_roles: [operator, admin]
+
+agents:
+  - id: safe_tool
+  - id: fail_export_data
+
+pipeline:
+  - step: safe_tool
+  - step: fail_export_data
+    depends_on: safe_tool

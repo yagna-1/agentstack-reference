@@ -1,0 +1,21 @@
+apiVersion: astragraph.io/v1
+kind: AgentPolicy
+metadata:
+  name: e2e-policy
+  version: "1.0"
+  owner: "agentstack-local"
+spec:
+  agents:
+    - name: weather-agent
+      tier: 2
+      allowed_tools: [safe_tool, export_data]
+      blocked_tools: []
+  rules:
+    - id: rule-export-block
+      description: Block export_data in demo policy
+      condition: "action.tool == export_data"
+      action: BLOCK
+  verification:
+    threshold: 0.7
+    model: mock-verifier
+    fallback: BLOCK
