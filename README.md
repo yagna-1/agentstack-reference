@@ -23,6 +23,7 @@ It contains:
 - one sample workflow manifest
 - one sample policy bundle
 - shell scripts for bootstrap, run, and audit-to-test compilation
+- one rich CLI entrypoint (`./agentstack`) to operate the full stack from here only
 
 It does not contain product business logic from NexusGate, FluxRoute, AstraGraph, Recast, or mcp-test.
 
@@ -53,7 +54,7 @@ flowchart LR
 ### 1. Bootstrap dependencies
 
 ```bash
-./scripts/bootstrap.sh
+./agentstack bootstrap
 ```
 
 This clones or updates the five source repos into `./deps/`.
@@ -67,7 +68,29 @@ cp .env.example .env
 ### 3. Run end-to-end demo
 
 ```bash
-./scripts/run.sh
+./agentstack demo
+```
+
+### 4. Operate everything from one CLI
+
+```bash
+# Health + status
+./agentstack health
+./agentstack ps
+
+# Bring stack up/down
+./agentstack up --build
+./agentstack down
+
+# Logs
+./agentstack logs -f nexusgate
+
+# Recompile tests from audit JSON
+./agentstack compile
+
+# Run commands inside any dependency repo
+./agentstack repo nexusgate cargo check
+./agentstack repo recast go test ./...
 ```
 
 ## Demo Behavior
@@ -94,6 +117,8 @@ After a successful run, outputs are available at:
 
 ```text
 agentstack-reference/
+├── agentstack
+├── agentstack.py
 ├── assets/
 │   ├── agentstack-explainer.gif
 ├── docker-compose.yml
@@ -111,25 +136,24 @@ agentstack-reference/
 ## Useful Commands
 
 ```bash
-# Start services manually
+# Primary entrypoint
+./agentstack --help
 
-docker compose up -d --build
+# Diagnostics
+./agentstack doctor
+./agentstack urls
 
-# Stop services
-
-docker compose down
-
-# Re-compile tests from latest audit JSON
-
-./scripts/audit_to_tests.sh
-
-# Run mcp-test helper test suite in tools profile
-
-docker compose --profile tools run --rm mcp-test
+# Full lifecycle
+./agentstack bootstrap
+./agentstack up --build
+./agentstack health
+./agentstack demo
+./agentstack down
 ```
 
 ## Notes
 
 - This reference repo intentionally keeps integration additive and opt-in.
 - The sample flow is designed to demonstrate both allowed and blocked style outcomes in generated audit/test artifacts.
-- If `deps/` is missing or stale, rerun `./scripts/bootstrap.sh`.
+- If `deps/` is missing or stale, rerun `./agentstack bootstrap`.
+- For new users, `./agentstack` is the only command surface they need.
