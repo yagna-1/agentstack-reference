@@ -13,7 +13,6 @@ Single-entry command surface for operating the glue stack:
 from __future__ import annotations
 
 import argparse
-import curses
 import json
 import os
 import shutil
@@ -25,6 +24,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+try:
+    import curses
+except ImportError:
+    curses = None
 
 
 ROOT = Path(__file__).resolve().parent
@@ -89,6 +93,27 @@ def run_capture(cmd: list[str], cwd: Path | None = None) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
+def build_script_cmd(script: Path, extra_args: list[str] | None = None) -> tuple[list[str] | None, str | None]:
+    args = extra_args or []
+    if os.name == "nt":
+        bash = shutil.which("bash")
+        if not bash:
+            return (
+                None,
+                "bash is required for this command on Windows. Install Git Bash or run via WSL.",
+            )
+        return [bash, str(script), *args], None
+    return [str(script), *args], None
+
+
+def run_script(script: Path, extra_args: list[str] | None = None, cwd: Path | None = None) -> int:
+    cmd, msg = build_script_cmd(script, extra_args)
+    if cmd is None:
+        err(msg or f"unable to run script: {script}")
+        return 2
+    return run(cmd, cwd=cwd)
+
+
 def require_script(path: Path) -> None:
     if not path.exists():
         raise SystemExit(f"Missing required script: {path}")
@@ -139,7 +164,7 @@ def compose_cmd(args: list[str]) -> int:
 def cmd_bootstrap(_args: argparse.Namespace) -> int:
     script = SCRIPTS_DIR / "bootstrap.sh"
     require_script(script)
-    return run([str(script)], cwd=ROOT)
+    return run_script(script, cwd=ROOT)
 
 
 def cmd_up(args: argparse.Namespace) -> int:
@@ -176,16 +201,16 @@ def cmd_logs(args: argparse.Namespace) -> int:
 def cmd_demo(_args: argparse.Namespace) -> int:
     script = SCRIPTS_DIR / "run.sh"
     require_script(script)
-    return run([str(script)], cwd=ROOT)
+    return run_script(script, cwd=ROOT)
 
 
 def cmd_compile(args: argparse.Namespace) -> int:
     script = SCRIPTS_DIR / "audit_to_tests.sh"
     require_script(script)
-    cmd = [str(script)]
+    extra_args: list[str] = []
     if args.audit:
-        cmd.append(args.audit)
-    return run(cmd, cwd=ROOT)
+        extra_args.append(args.audit)
+    return run_script(script, extra_args=extra_args, cwd=ROOT)
 
 
 def cmd_urls(_args: argparse.Namespace) -> int:
@@ -292,6 +317,7 @@ class AgentStackTUI:
         self.follow_logs = False
         self.last_refresh = 0.0
         self.command_history: list[str] = []
+        self.last_draw_error = ""
 
     def stop_logs(self) -> None:
         if self.log_proc and self.log_proc.poll() is None:
@@ -352,17 +378,44 @@ class AgentStackTUI:
             self.status_message = f"{title}: failed (exit {code})"
         self.refresh(force=True)
 
-    def _draw_box(self, y: int, x: int, h: int, w: int, title: str) -> None:
-        if h < 2 or w < 2:
+    def run_script_action(self, title: str, script: Path, extra_args: list[str] | None = None) -> None:
+        cmd, msg = build_script_cmd(script, extra_args)
+        if cmd is None:
+            self.status_message = msg or f"{title}: unavailable"
+            self.append_log(self.status_message)
             return
-        self.stdscr.addstr(y, x, "+" + "-" * (w - 2) + "+")
+        self.run_action(title, cmd)
+
+    def _draw_box(self, y: int, x: int, h: int, w: int, title: str) -> None:
+        if h < 3 or w < 4:
+            return
+        self._safe_addstr(y, x, "+" + "-" * (w - 2) + "+")
         for i in range(1, h - 1):
-            self.stdscr.addstr(y + i, x, "|")
-            self.stdscr.addstr(y + i, x + w - 1, "|")
-        self.stdscr.addstr(y + h - 1, x, "+" + "-" * (w - 2) + "+")
+            self._safe_addstr(y + i, x, "|")
+            self._safe_addstr(y + i, x + w - 1, "|")
+        self._safe_addstr(y + h - 1, x, "+" + "-" * (w - 2) + "+")
         if title and w > 6:
             t = f" {title} "
-            self.stdscr.addstr(y, x + 2, t[: w - 4])
+            self._safe_addstr(y, x + 2, t[: w - 4])
+
+    def _safe_addstr(self, y: int, x: int, text: str, attr: int | None = None) -> None:
+        h, w = self.stdscr.getmaxyx()
+        if y < 0 or x < 0 or y >= h or x >= w:
+            return
+        if not text:
+            return
+        max_len = w - x
+        if max_len <= 0:
+            return
+        s = text[:max_len]
+        try:
+            if attr is None:
+                self.stdscr.addstr(y, x, s)
+            else:
+                self.stdscr.addstr(y, x, s, attr)
+        except Exception:
+            # Terminal can still reject writes during rapid resize; ignore safely.
+            return
 
     def refresh_health(self) -> None:
         rows = []
@@ -407,10 +460,13 @@ class AgentStackTUI:
 
     def prompt_command(self) -> None:
         h, w = self.stdscr.getmaxyx()
+        if w < 8:
+            self.status_message = "terminal too narrow for prompt; widen and retry"
+            return
         prompt = ": "
         self.stdscr.move(h - 1, 0)
         self.stdscr.clrtoeol()
-        self.stdscr.addstr(h - 1, 0, prompt)
+        self._safe_addstr(h - 1, 0, prompt)
         curses.echo()
         try:
             raw = self.stdscr.getstr(h - 1, len(prompt), max(4, w - len(prompt) - 2))
@@ -441,14 +497,14 @@ class AgentStackTUI:
             self.run_action("compose down", ["docker", "compose", "down"])
             return
         if head == "demo":
-            self.run_action("demo", [str(SCRIPTS_DIR / "run.sh")])
+            self.run_script_action("demo", SCRIPTS_DIR / "run.sh")
             return
         if head == "compile":
             extra = parts[1:] if len(parts) > 1 else []
-            self.run_action("compile", [str(SCRIPTS_DIR / "audit_to_tests.sh"), *extra])
+            self.run_script_action("compile", SCRIPTS_DIR / "audit_to_tests.sh", extra)
             return
         if head == "bootstrap":
-            self.run_action("bootstrap", [str(SCRIPTS_DIR / "bootstrap.sh")])
+            self.run_script_action("bootstrap", SCRIPTS_DIR / "bootstrap.sh")
             return
         if head == "health":
             self.refresh_health()
@@ -478,22 +534,40 @@ class AgentStackTUI:
     def draw(self) -> None:
         self.stdscr.erase()
         h, w = self.stdscr.getmaxyx()
+        if h < 14 or w < 60:
+            self._safe_addstr(0, 0, "AgentStack UI: enlarge terminal (min ~60x14) or use './agentstack health'")
+            self._safe_addstr(1, 0, "Press q to quit.")
+            self._safe_addstr(h - 1, 0, f"status: {self.status_message}", curses.A_BOLD)
+            self.stdscr.refresh()
+            return
+
         title = " AgentStack Control Center "
-        self.stdscr.addstr(0, 0, (title + self.HELP)[: max(0, w - 1)])
+        self._safe_addstr(0, 0, (title + self.HELP)[: max(0, w - 1)])
 
-        top_h = max(8, min(15, h // 3))
-        logs_h = max(8, h - top_h - 3)
-        left_w = max(45, min(70, w // 2))
-        right_w = max(20, w - left_w - 1)
+        body_h = h - 2
+        top_h = max(7, min(15, body_h // 2))
+        logs_h = body_h - top_h
+        if logs_h < 6:
+            top_h = max(6, body_h - 6)
+            logs_h = body_h - top_h
 
-        self._draw_box(1, 0, top_h, left_w, "Services")
-        self._draw_box(1, left_w, top_h, right_w, "Health")
+        left_w = max(32, min(70, w // 2))
+        right_w = w - left_w
+        dual_panel = right_w >= 24
+
+        if dual_panel:
+            self._draw_box(1, 0, top_h, left_w, "Services")
+            self._draw_box(1, left_w, top_h, right_w, "Health")
+        else:
+            self._draw_box(1, 0, top_h, w, "Services + Health")
+            left_w = w
+            right_w = 0
         self._draw_box(1 + top_h, 0, logs_h, w, f"Logs ({self.log_service or 'none'})")
 
         # Services panel
         row_y = 2
         header = "IDX  SERVICE                          STATUS"
-        self.stdscr.addstr(row_y, 2, header[: left_w - 4])
+        self._safe_addstr(row_y, 2, header[: max(0, left_w - 4)])
         row_y += 1
         max_rows = top_h - 3
         for i, row in enumerate(self.service_rows[:max_rows]):
@@ -501,28 +575,34 @@ class AgentStackTUI:
             status = self._status_short(row)
             line = f"{i+1:>2}   {service:<30} {status:<16}"
             attr = curses.A_REVERSE if i == self.selected_index else curses.A_NORMAL
-            self.stdscr.addstr(row_y + i, 2, line[: left_w - 4], attr)
+            self._safe_addstr(row_y + i, 2, line[: max(0, left_w - 4)], attr)
 
         if not self.service_rows:
-            self.stdscr.addstr(row_y, 2, "No services found (run `up`)", curses.A_DIM)
+            self._safe_addstr(row_y, 2, "No services found (run `up`)", curses.A_DIM)
 
         # Health panel
         hy = 2
-        for name, is_ok in self.health_rows[: top_h - 3]:
-            marker = "UP" if is_ok else "DOWN"
-            line = f"{name:<20} {marker}"
-            self.stdscr.addstr(hy, left_w + 2, line[: right_w - 4])
-            hy += 1
+        if dual_panel:
+            for name, is_ok in self.health_rows[: top_h - 3]:
+                marker = "UP" if is_ok else "DOWN"
+                line = f"{name:<20} {marker}"
+                self._safe_addstr(hy, left_w + 2, line[: max(0, right_w - 4)])
+                hy += 1
+        else:
+            health_text = " | ".join(
+                f"{name}:{'UP' if ok_flag else 'DOWN'}" for name, ok_flag in self.health_rows
+            )
+            self._safe_addstr(top_h - 1, 2, health_text[: max(0, w - 4)], curses.A_DIM)
 
         # Logs panel
         with self.log_lock:
             lines = self.log_lines[-(logs_h - 3) :]
         ly = 2 + top_h
         for i, line in enumerate(lines):
-            self.stdscr.addstr(ly + i, 2, line[: max(1, w - 4)])
+            self._safe_addstr(ly + i, 2, line[: max(1, w - 4)])
 
         status = f"status: {self.status_message}"
-        self.stdscr.addstr(h - 1, 0, status[: max(0, w - 1)], curses.A_BOLD)
+        self._safe_addstr(h - 1, 0, status[: max(0, w - 1)], curses.A_BOLD)
         self.stdscr.refresh()
 
     def loop(self) -> int:
@@ -537,7 +617,11 @@ class AgentStackTUI:
 
         while self.running:
             self.refresh()
-            self.draw()
+            try:
+                self.draw()
+            except Exception as exc:
+                self.last_draw_error = str(exc)
+                self.status_message = f"draw error: {self.last_draw_error}"
             ch = self.stdscr.getch()
             if ch == -1:
                 time.sleep(0.08)
@@ -557,11 +641,11 @@ class AgentStackTUI:
             elif ch == ord("d"):
                 self.run_action("compose down", ["docker", "compose", "down"])
             elif ch == ord("b"):
-                self.run_action("bootstrap", [str(SCRIPTS_DIR / "bootstrap.sh")])
+                self.run_script_action("bootstrap", SCRIPTS_DIR / "bootstrap.sh")
             elif ch == ord("m"):
-                self.run_action("demo", [str(SCRIPTS_DIR / "run.sh")])
+                self.run_script_action("demo", SCRIPTS_DIR / "run.sh")
             elif ch == ord("c"):
-                self.run_action("compile", [str(SCRIPTS_DIR / "audit_to_tests.sh")])
+                self.run_script_action("compile", SCRIPTS_DIR / "audit_to_tests.sh")
             elif ch == ord("h"):
                 self.refresh_health()
                 self.status_message = "health refreshed"
@@ -582,16 +666,65 @@ class AgentStackTUI:
         return 0
 
 
+def cmd_ui_lite() -> int:
+    print("AgentStack UI (Lite)")
+    print("-------------------")
+    print("curses UI is unavailable on this system/terminal, using portable prompt mode.")
+    print("Commands: doctor, bootstrap, up, down, ps, health, urls, demo, compile, logs <svc>, quit")
+    while True:
+        try:
+            raw = input("agentstack> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not raw:
+            continue
+        if raw in {"quit", "q", "exit"}:
+            return 0
+        parts = raw.split()
+        cmd = parts[0]
+        if cmd == "doctor":
+            cmd_doctor(argparse.Namespace())
+        elif cmd == "bootstrap":
+            cmd_bootstrap(argparse.Namespace())
+        elif cmd == "up":
+            cmd_up(argparse.Namespace(build=True, tools=False))
+        elif cmd == "down":
+            cmd_down(argparse.Namespace(volumes=False))
+        elif cmd == "ps":
+            cmd_ps(argparse.Namespace())
+        elif cmd == "health":
+            cmd_health(argparse.Namespace())
+        elif cmd == "urls":
+            cmd_urls(argparse.Namespace())
+        elif cmd == "demo":
+            cmd_demo(argparse.Namespace())
+        elif cmd == "compile":
+            path = parts[1] if len(parts) > 1 else None
+            cmd_compile(argparse.Namespace(audit=path))
+        elif cmd == "logs":
+            svc = parts[1] if len(parts) > 1 else None
+            cmd_logs(argparse.Namespace(service=svc, follow=False, tail=120))
+        else:
+            print(f"Unknown command: {raw}")
+
+
 def cmd_ui(_args: argparse.Namespace) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         err("ui mode requires an interactive TTY")
         return 2
+    if curses is None:
+        return cmd_ui_lite()
 
     def _wrapped(stdscr: curses.window) -> int:
         app = AgentStackTUI(stdscr)
         return app.loop()
 
-    return curses.wrapper(_wrapped)
+    try:
+        return curses.wrapper(_wrapped)
+    except Exception as exc:
+        warn(f"curses ui failed ({exc}); falling back to lite mode")
+        return cmd_ui_lite()
 
 
 def build_parser() -> argparse.ArgumentParser:

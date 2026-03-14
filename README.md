@@ -96,6 +96,13 @@ cp .env.example .env
 ./agentstack repo recast go test ./...
 ```
 
+### Cross-Platform Launch
+
+- macOS / Linux: `./agentstack ui`
+- Windows CMD/PowerShell: `agentstack.cmd ui` or `python agentstack.py ui`
+- If terminal `curses` is unavailable, the CLI auto-falls back to **Lite UI** prompt mode.
+- On Windows, script-backed flows (`bootstrap`, `demo`, `compile`) use `bash`; install Git Bash (or use WSL) for full functionality.
+
 ### Rich TUI Mode
 
 Run:
