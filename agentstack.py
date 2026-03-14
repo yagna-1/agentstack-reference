@@ -526,7 +526,11 @@ class AgentStackTUI:
         self.stdscr.refresh()
 
     def loop(self) -> int:
-        curses.curs_set(0)
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            # Some terminals do not support cursor visibility changes.
+            pass
         self.stdscr.nodelay(True)
         self.stdscr.keypad(True)
         self.refresh(force=True)
