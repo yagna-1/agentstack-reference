@@ -50,6 +50,8 @@ REPO_MAP = {
     "astragraph": DEPS_DIR / "astragraph",
 }
 
+ACCENT_ORANGE = "38;5;208"
+
 
 def _supports_color() -> bool:
     return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -62,7 +64,7 @@ def _color(text: str, code: str) -> str:
 
 
 def info(msg: str) -> None:
-    print(_color("info", "36") + f": {msg}")
+    print(_color("info", ACCENT_ORANGE) + f": {msg}")
 
 
 def ok(msg: str) -> None:
@@ -318,6 +320,42 @@ class AgentStackTUI:
         self.last_refresh = 0.0
         self.command_history: list[str] = []
         self.last_draw_error = ""
+        self.attr_title = curses.A_BOLD
+        self.attr_border = curses.A_NORMAL
+        self.attr_header = curses.A_BOLD
+        self.attr_selected = curses.A_REVERSE | curses.A_BOLD
+        self.attr_status = curses.A_BOLD
+        self.attr_ok = curses.A_BOLD
+        self.attr_bad = curses.A_BOLD
+        self.attr_hint = curses.A_DIM
+
+    def _init_theme(self) -> None:
+        if not hasattr(curses, "has_colors") or not curses.has_colors():
+            return
+        try:
+            curses.start_color()
+            try:
+                curses.use_default_colors()
+            except curses.error:
+                pass
+            orange = curses.COLOR_YELLOW
+            if getattr(curses, "COLORS", 0) >= 256:
+                orange = 208
+            curses.init_pair(1, orange, -1)  # accent text
+            curses.init_pair(2, curses.COLOR_WHITE, -1)  # neutral text
+            curses.init_pair(3, curses.COLOR_BLACK, orange)  # selected/status
+            curses.init_pair(4, curses.COLOR_GREEN, -1)  # healthy
+            curses.init_pair(5, curses.COLOR_RED, -1)  # unhealthy
+            self.attr_title = curses.color_pair(1) | curses.A_BOLD
+            self.attr_border = curses.color_pair(1)
+            self.attr_header = curses.color_pair(1) | curses.A_BOLD
+            self.attr_selected = curses.color_pair(3) | curses.A_BOLD
+            self.attr_status = curses.color_pair(3) | curses.A_BOLD
+            self.attr_ok = curses.color_pair(4) | curses.A_BOLD
+            self.attr_bad = curses.color_pair(5) | curses.A_BOLD
+            self.attr_hint = curses.color_pair(1) | curses.A_DIM
+        except curses.error:
+            return
 
     def stop_logs(self) -> None:
         if self.log_proc and self.log_proc.poll() is None:
@@ -389,14 +427,14 @@ class AgentStackTUI:
     def _draw_box(self, y: int, x: int, h: int, w: int, title: str) -> None:
         if h < 3 or w < 4:
             return
-        self._safe_addstr(y, x, "+" + "-" * (w - 2) + "+")
+        self._safe_addstr(y, x, "+" + "-" * (w - 2) + "+", self.attr_border)
         for i in range(1, h - 1):
-            self._safe_addstr(y + i, x, "|")
-            self._safe_addstr(y + i, x + w - 1, "|")
-        self._safe_addstr(y + h - 1, x, "+" + "-" * (w - 2) + "+")
+            self._safe_addstr(y + i, x, "|", self.attr_border)
+            self._safe_addstr(y + i, x + w - 1, "|", self.attr_border)
+        self._safe_addstr(y + h - 1, x, "+" + "-" * (w - 2) + "+", self.attr_border)
         if title and w > 6:
             t = f" {title} "
-            self._safe_addstr(y, x + 2, t[: w - 4])
+            self._safe_addstr(y, x + 2, t[: w - 4], self.attr_title)
 
     def _safe_addstr(self, y: int, x: int, text: str, attr: int | None = None) -> None:
         h, w = self.stdscr.getmaxyx()
@@ -466,7 +504,7 @@ class AgentStackTUI:
         prompt = ": "
         self.stdscr.move(h - 1, 0)
         self.stdscr.clrtoeol()
-        self._safe_addstr(h - 1, 0, prompt)
+        self._safe_addstr(h - 1, 0, prompt, self.attr_title)
         curses.echo()
         try:
             raw = self.stdscr.getstr(h - 1, len(prompt), max(4, w - len(prompt) - 2))
@@ -535,14 +573,16 @@ class AgentStackTUI:
         self.stdscr.erase()
         h, w = self.stdscr.getmaxyx()
         if h < 14 or w < 60:
-            self._safe_addstr(0, 0, "AgentStack UI: enlarge terminal (min ~60x14) or use './agentstack health'")
+            self._safe_addstr(
+                0, 0, "AgentStack UI: enlarge terminal (min ~60x14) or use './agentstack health'", self.attr_title
+            )
             self._safe_addstr(1, 0, "Press q to quit.")
-            self._safe_addstr(h - 1, 0, f"status: {self.status_message}", curses.A_BOLD)
+            self._safe_addstr(h - 1, 0, f"status: {self.status_message}", self.attr_status)
             self.stdscr.refresh()
             return
 
         title = " AgentStack Control Center "
-        self._safe_addstr(0, 0, (title + self.HELP)[: max(0, w - 1)])
+        self._safe_addstr(0, 0, (title + self.HELP)[: max(0, w - 1)], self.attr_title)
 
         body_h = h - 2
         top_h = max(7, min(15, body_h // 2))
@@ -567,32 +607,34 @@ class AgentStackTUI:
         # Services panel
         row_y = 2
         header = "IDX  SERVICE                          STATUS"
-        self._safe_addstr(row_y, 2, header[: max(0, left_w - 4)])
+        self._safe_addstr(row_y, 2, header[: max(0, left_w - 4)], self.attr_header)
         row_y += 1
         max_rows = top_h - 3
         for i, row in enumerate(self.service_rows[:max_rows]):
             service = self._service_name(row)
             status = self._status_short(row)
             line = f"{i+1:>2}   {service:<30} {status:<16}"
-            attr = curses.A_REVERSE if i == self.selected_index else curses.A_NORMAL
+            attr = self.attr_selected if i == self.selected_index else curses.A_NORMAL
             self._safe_addstr(row_y + i, 2, line[: max(0, left_w - 4)], attr)
 
         if not self.service_rows:
-            self._safe_addstr(row_y, 2, "No services found (run `up`)", curses.A_DIM)
+            self._safe_addstr(row_y, 2, "No services found (run `up`)", self.attr_hint)
 
         # Health panel
         hy = 2
         if dual_panel:
             for name, is_ok in self.health_rows[: top_h - 3]:
                 marker = "UP" if is_ok else "DOWN"
-                line = f"{name:<20} {marker}"
-                self._safe_addstr(hy, left_w + 2, line[: max(0, right_w - 4)])
+                name_text = f"{name:<20}"
+                self._safe_addstr(hy, left_w + 2, name_text[: max(0, right_w - 4)])
+                marker_attr = self.attr_ok if is_ok else self.attr_bad
+                self._safe_addstr(hy, left_w + 23, marker, marker_attr)
                 hy += 1
         else:
             health_text = " | ".join(
                 f"{name}:{'UP' if ok_flag else 'DOWN'}" for name, ok_flag in self.health_rows
             )
-            self._safe_addstr(top_h - 1, 2, health_text[: max(0, w - 4)], curses.A_DIM)
+            self._safe_addstr(top_h - 1, 2, health_text[: max(0, w - 4)], self.attr_hint)
 
         # Logs panel
         with self.log_lock:
@@ -602,7 +644,7 @@ class AgentStackTUI:
             self._safe_addstr(ly + i, 2, line[: max(1, w - 4)])
 
         status = f"status: {self.status_message}"
-        self._safe_addstr(h - 1, 0, status[: max(0, w - 1)], curses.A_BOLD)
+        self._safe_addstr(h - 1, 0, status[: max(0, w - 1)], self.attr_status)
         self.stdscr.refresh()
 
     def loop(self) -> int:
@@ -613,6 +655,7 @@ class AgentStackTUI:
             pass
         self.stdscr.nodelay(True)
         self.stdscr.keypad(True)
+        self._init_theme()
         self.refresh(force=True)
 
         while self.running:
@@ -667,13 +710,13 @@ class AgentStackTUI:
 
 
 def cmd_ui_lite() -> int:
-    print("AgentStack UI (Lite)")
-    print("-------------------")
-    print("curses UI is unavailable on this system/terminal, using portable prompt mode.")
-    print("Commands: doctor, bootstrap, up, down, ps, health, urls, demo, compile, logs <svc>, quit")
+    print(_color("AgentStack UI (Lite)", ACCENT_ORANGE))
+    print(_color("-------------------", ACCENT_ORANGE))
+    print(_color("curses UI is unavailable on this system/terminal, using portable prompt mode.", ACCENT_ORANGE))
+    print(_color("Commands: doctor, bootstrap, up, down, ps, health, urls, demo, compile, logs <svc>, quit", "33"))
     while True:
         try:
-            raw = input("agentstack> ").strip()
+            raw = input(_color("agentstack> ", ACCENT_ORANGE)).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
@@ -706,7 +749,7 @@ def cmd_ui_lite() -> int:
             svc = parts[1] if len(parts) > 1 else None
             cmd_logs(argparse.Namespace(service=svc, follow=False, tail=120))
         else:
-            print(f"Unknown command: {raw}")
+            print(_color(f"Unknown command: {raw}", "31"))
 
 
 def cmd_ui(_args: argparse.Namespace) -> int:

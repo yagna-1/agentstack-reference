@@ -111,6 +111,11 @@ Run:
 ./agentstack ui
 ```
 
+Theme:
+
+- Orange-accent control center (Claude-style feel) for headers, borders, prompts, and status line.
+- Health states remain semantic (`UP` green, `DOWN` red) for quick scanning.
+
 Keybindings:
 
 - `q` quit
