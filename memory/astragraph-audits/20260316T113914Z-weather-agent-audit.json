@@ -1,0 +1,26 @@
+[
+  {
+    "workflow_id": "weather-agent.task_demo",
+    "agent_id": "safe_tool",
+    "tool_name": "safe_tool",
+    "arguments": {
+      "message": "hello",
+      "namespace": "weather-agent"
+    },
+    "status": "allowed",
+    "deviation_score": 0,
+    "timestamp": "2026-03-16T11:38:06.17041193Z"
+  },
+  {
+    "workflow_id": "weather-agent.task_demo",
+    "agent_id": "fail_export_data",
+    "tool_name": "fail_export_data",
+    "arguments": {
+      "message": "hello",
+      "namespace": "weather-agent"
+    },
+    "status": "blocked",
+    "deviation_score": 1,
+    "timestamp": "2026-03-16T11:38:06.17041268Z"
+  }
+]
