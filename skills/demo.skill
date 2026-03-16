@@ -1,0 +1,5 @@
+name: demo
+description: Run full governed demo loop and persist memory artifacts
+command: ./agentstack demo
+auto_commit_memory: true
+produces: [memory/astragraph-audits/, memory/fluxroute-traces/, memory/recast-tests/]

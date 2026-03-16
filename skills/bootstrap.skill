@@ -1,0 +1,4 @@
+name: bootstrap
+description: Clone/update all dependency repos
+command: ./agentstack bootstrap
+auto_commit_memory: false

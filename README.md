@@ -133,12 +133,17 @@ Keybindings:
 
 `run.sh` performs the following sequence:
 
-1. starts Redis, AstraGraph services, NexusGate, and FluxRoute via Compose
+1. starts Redis, NexusGate, FluxRoute, and AstraGraph proxy mode via Compose
 2. mints a NexusGate admin token and API key
 3. sends an MCP tool call through `NexusGate -> AstraGraph proxy -> mock MCP`
 4. executes FluxRoute sample manifest (`safe_tool -> fail_export_data`)
 5. writes AstraGraph-compatible audit JSON from FluxRoute trace export
 6. compiles audit JSON into Playwright TS and Playwright Python tests using Recast
+
+Proxy modes:
+
+- default: `AGENTSTACK_ASTRAGRAPH_MODE=mock` (fast local mock proxy on `:17070`)
+- full: `AGENTSTACK_ASTRAGRAPH_MODE=real` (real graph/policy/verifier/proxy stack; real proxy exposed on `:17071`)
 
 ## Generated Artifacts
 
@@ -194,3 +199,16 @@ agentstack-reference/
 - The sample flow is designed to demonstrate both allowed and blocked style outcomes in generated audit/test artifacts.
 - If `deps/` is missing or stale, rerun `./agentstack bootstrap`.
 - For new users, `./agentstack` is the only command surface they need.
+
+## GitAgent Standard Overlay
+
+This repository now includes the AgentStack GitAgent overlay:
+
+- `agent.yaml` for identity, policy binding, and skill manifest
+- `SOUL.md` for operator-facing identity and mission
+- `RULES.md` for human-readable constraints mapped to runtime policy
+- `memory/` for auto-committed audit/test history
+- `skills/` for executable capability descriptors
+- `hooks/` for pre/post execution governance automation
+
+The overlay is additive: existing APIs and runtime behavior are unchanged unless these new files/hooks are explicitly used.

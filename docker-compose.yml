@@ -23,12 +23,14 @@ services:
 
   graph:
     image: rust:1.88
+    profiles: ["astragraph-real"]
     working_dir: /app
     volumes:
       - ./deps/astragraph:/app
       - ./deps/astragraph/certs:/app/certs
-    command: ["bash", "-lc", "cargo run -p astragraph-graph"]
+    command: ["cargo", "run", "-p", "astragraph-graph", "--bin", "astragraph-graph"]
     environment:
+      CARGO_TARGET_DIR: /tmp/cargo-target-graph
       ASTRAGRAPH_GRAPH_REST_ADDR: 0.0.0.0:8080
       ASTRAGRAPH_GRAPH_GRPC_ADDR: 0.0.0.0:9090
       ASTRAGRAPH_GRAPH_TLS_CERT: /app/certs/graph/graph.crt
@@ -43,12 +45,14 @@ services:
 
   policy:
     image: rust:1.88
+    profiles: ["astragraph-real"]
     working_dir: /app
     volumes:
       - ./deps/astragraph:/app
       - ./deps/astragraph/certs:/app/certs
-    command: ["bash", "-lc", "cargo run -p astragraph-policy"]
+    command: ["cargo", "run", "-p", "astragraph-policy", "--bin", "astragraph-policy"]
     environment:
+      CARGO_TARGET_DIR: /tmp/cargo-target-policy
       ASTRAGRAPH_POLICY_REST_ADDR: 0.0.0.0:8081
       ASTRAGRAPH_POLICY_GRPC_ADDR: 0.0.0.0:9091
       ASTRAGRAPH_POLICY_TLS_CERT: /app/certs/policy/policy.crt
@@ -63,11 +67,15 @@ services:
 
   verifier:
     image: python:3.11
+    profiles: ["astragraph-real"]
     working_dir: /app
     volumes:
       - ./deps/astragraph:/app
       - ./deps/astragraph/certs:/app/certs
-    command: ["bash", "-lc", "pip install -r requirements.txt && python verifier/server.py"]
+    command:
+      - "bash"
+      - "-lc"
+      - "pip install grpcio grpcio-tools && python -m grpc_tools.protoc -I proto --python_out=verifier/generated --grpc_python_out=verifier/generated proto/astragraph.proto && python scripts/mock_verifier.py"
     environment:
       ASTRAGRAPH_VERIFIER_GRPC_ADDR: 0.0.0.0:8082
       ASTRAGRAPH_VERIFIER_TLS_CERT: /app/certs/verifier/verifier.crt
@@ -80,12 +88,14 @@ services:
 
   astragraph-proxy:
     image: rust:1.88
+    profiles: ["astragraph-real"]
     working_dir: /app
     volumes:
       - ./deps/astragraph:/app
       - ./deps/astragraph/certs:/app/certs
-    command: ["bash", "-lc", "cargo run -p astragraph-proxy"]
+    command: ["cargo", "run", "-p", "astragraph-proxy", "--bin", "astragraph-proxy"]
     environment:
+      CARGO_TARGET_DIR: /tmp/cargo-target-proxy
       ASTRAGRAPH_GRAPH_GRPC_ADDR: https://graph:9090
       ASTRAGRAPH_POLICY_GRPC_ADDR: https://policy:9091
       ASTRAGRAPH_VERIFIER_GRPC_ADDR: https://verifier:8082
@@ -96,14 +106,27 @@ services:
       ASTRAGRAPH_PROXY_HTTP_ADDR: 0.0.0.0:7070
       ASTRAGRAPH_MCP_UPSTREAM: http://mock-mcp:7071
       ASTRAGRAPH_A2A_UPSTREAM: http://mock-mcp:7071
+      ASTRAGRAPH_AGENT_ID: lead-scorer
       ASTRAGRAPH_POLICY_ID: e2e-policy
+      ASTRAGRAPH_ALLOW_WITHOUT_TRACE_TOOLS: a2a.tasks.send,safe_tool
       ASTRAGRAPH_AUTH_DISABLED: "true"
     ports:
-      - "17070:7070"
+      - "17071:7070"
     depends_on:
       - graph
       - policy
       - verifier
+      - mock-mcp
+
+  astragraph-proxy-mock:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./deps/astragraph/scripts/mock_proxy_server.py:/app/mock_proxy_server.py:ro
+    command: ["python", "/app/mock_proxy_server.py", "--host", "0.0.0.0", "--port", "7070"]
+    ports:
+      - "17070:7070"
+    depends_on:
       - mock-mcp
 
   nexusgate:
@@ -115,7 +138,7 @@ services:
       DATABASE_URL: sqlite:/app/data/nexusgate.db
       REDIS_URL: redis://redis:6379
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-agentstack-local-admin-secret-change-me-123456}
-      MCP_UPSTREAM_URL: http://astragraph-proxy:7070
+      MCP_UPSTREAM_URL: ${MCP_UPSTREAM_URL_OVERRIDE:-http://astragraph-proxy-mock:7070}
       MCP_DEFAULT_ESTIMATED_COST_MICRO_USD: ${MCP_DEFAULT_ESTIMATED_COST_MICRO_USD:-2500}
       PUBLIC_BASE_URL: http://localhost:18088
     volumes:
@@ -124,7 +147,6 @@ services:
       - "18088:8080"
     depends_on:
       - redis
-      - astragraph-proxy
 
   fluxroute-router:
     build:

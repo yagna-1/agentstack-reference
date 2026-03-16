@@ -1,0 +1,5 @@
+name: compile
+description: Compile audit artifacts to Playwright tests
+command: ./agentstack compile
+auto_commit_memory: true
+produces: [memory/recast-tests/]

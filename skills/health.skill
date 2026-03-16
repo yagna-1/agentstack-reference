@@ -1,0 +1,4 @@
+name: health
+description: Check stack health across core endpoints
+command: ./agentstack health
+auto_commit_memory: false

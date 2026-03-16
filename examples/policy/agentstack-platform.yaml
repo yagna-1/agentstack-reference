@@ -1,0 +1,24 @@
+apiVersion: astragraph.io/v1
+kind: AgentPolicy
+metadata:
+  name: agentstack-platform
+  version: "1.0"
+  owner: "agentstack-reference"
+spec:
+  rules:
+    - id: rule-01
+      description: "Every governed workflow must include a workflow_id."
+      condition: "rule_01_violated is true"
+      action: BLOCK
+    - id: rule-02
+      description: "Policy enforcement is fail-closed for all restricted actions."
+      condition: "rule_02_violated is true"
+      action: BLOCK
+    - id: rule-03
+      description: "Audit artifacts must be written to memory/ after each demo run."
+      condition: "rule_03_violated is true"
+      action: BLOCK
+    - id: rule-04
+      description: "Test compilation from audit artifacts must be deterministic."
+      condition: "rule_04_violated is true"
+      action: BLOCK

@@ -1,0 +1,38 @@
+name: agentstack
+version: 1.0.0
+model: claude-sonnet-4-6
+
+identity:
+  policy_id: agentstack-platform
+  namespace: agentstack
+
+dependencies:
+  - repo: yagna-1/nexusgate
+    role: gateway
+  - repo: yagna-1/fluxroute
+    role: orchestrator
+  - repo: yagna-1/astragraph
+    role: governor
+  - repo: yagna-1/recast
+    role: test-compiler
+  - repo: yagna-1/mcp-test
+    role: contract-validator
+
+skills:
+  - bootstrap
+  - demo
+  - compile
+  - health
+  - ui
+
+hooks:
+  pre-demo: hooks/pre-demo.sh
+  post-demo: hooks/post-demo.sh
+  pre-commit: hooks/validate-rules.sh
+  on-policy-change: hooks/on-policy-change.sh
+
+memory:
+  path: memory/
+  auto_commit: true
+  human_review: pr
+  commit_message: "agent: {skill} completed - {summary}"

@@ -1,0 +1,4 @@
+name: ui
+description: Launch AgentStack control center TUI
+command: ./agentstack ui
+auto_commit_memory: false

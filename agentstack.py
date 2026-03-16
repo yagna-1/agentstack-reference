@@ -116,6 +116,13 @@ def run_script(script: Path, extra_args: list[str] | None = None, cwd: Path | No
     return run(cmd, cwd=cwd)
 
 
+def run_hook_if_present(hook_name: str) -> int:
+    hook = ROOT / "hooks" / f"{hook_name}.sh"
+    if not hook.exists():
+        return 0
+    return run_script(hook, cwd=ROOT)
+
+
 def require_script(path: Path) -> None:
     if not path.exists():
         raise SystemExit(f"Missing required script: {path}")
@@ -203,7 +210,13 @@ def cmd_logs(args: argparse.Namespace) -> int:
 def cmd_demo(_args: argparse.Namespace) -> int:
     script = SCRIPTS_DIR / "run.sh"
     require_script(script)
-    return run_script(script, cwd=ROOT)
+    pre_code = run_hook_if_present("pre-demo")
+    if pre_code != 0:
+        return pre_code
+    run_code = run_script(script, cwd=ROOT)
+    if run_code != 0:
+        return run_code
+    return run_hook_if_present("post-demo")
 
 
 def cmd_compile(args: argparse.Namespace) -> int:
@@ -535,7 +548,7 @@ class AgentStackTUI:
             self.run_action("compose down", ["docker", "compose", "down"])
             return
         if head == "demo":
-            self.run_script_action("demo", SCRIPTS_DIR / "run.sh")
+            self.run_action("demo", [sys.executable, str(ROOT / "agentstack.py"), "demo"])
             return
         if head == "compile":
             extra = parts[1:] if len(parts) > 1 else []
@@ -686,7 +699,7 @@ class AgentStackTUI:
             elif ch == ord("b"):
                 self.run_script_action("bootstrap", SCRIPTS_DIR / "bootstrap.sh")
             elif ch == ord("m"):
-                self.run_script_action("demo", SCRIPTS_DIR / "run.sh")
+                self.run_action("demo", [sys.executable, str(ROOT / "agentstack.py"), "demo"])
             elif ch == ord("c"):
                 self.run_script_action("compile", SCRIPTS_DIR / "audit_to_tests.sh")
             elif ch == ord("h"):
